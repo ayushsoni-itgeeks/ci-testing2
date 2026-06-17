@@ -1,0 +1,205 @@
+name: "Secret & Credential Scan"
+description: >
+  Runs Gitleaks + TruffleHog across full git history, checks for committed
+  .env files and private keys, uploads reports, and emits a single `findings`
+  count. The CALLER decides whether findings warn or block — this action never
+  fails the build itself.
+
+inputs:
+  gitleaks-version:
+    description: "Pinned Gitleaks release to install."
+    required: false
+    default: "8.24.2"
+
+outputs:
+  findings:
+    description: "Total number of security findings across all scanners."
+    value: ${{ steps.evaluate.outputs.findings }}
+
+runs:
+  using: composite
+  steps:
+    # ------------------------------------------------------------------------
+    # Small CLI utilities. `set -euo pipefail` makes the step fail fast.
+    # ------------------------------------------------------------------------
+    - name: Install Dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends jq wget curl ca-certificates
+
+    # ------------------------------------------------------------------------
+    # Gitleaks (pinned) + verify.
+    # ------------------------------------------------------------------------
+    - name: Install Gitleaks
+      shell: bash
+      run: |
+        set -euo pipefail
+        TARBALL="gitleaks_${{ inputs.gitleaks-version }}_linux_x64.tar.gz"
+        wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${{ inputs.gitleaks-version }}/${TARBALL}"
+        tar -xzf "${TARBALL}"
+        sudo mv gitleaks /usr/local/bin/
+        gitleaks version
+
+    # ------------------------------------------------------------------------
+    # TruffleHog via official installer.
+    # ------------------------------------------------------------------------
+    - name: Install TruffleHog
+      shell: bash
+      run: |
+        set -euo pipefail
+        curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+          | sudo sh -s -- -b /usr/local/bin
+        trufflehog --version
+
+    # ------------------------------------------------------------------------
+    # Gitleaks: scan entire git history. continue-on-error semantics via the
+    # `|| echo` so we always reach the evaluation step with a report on disk.
+    # ------------------------------------------------------------------------
+    - name: Gitleaks History Scan
+      shell: bash
+      run: |
+        set -uo pipefail
+        gitleaks git \
+          --report-format=json \
+          --report-path=gitleaks-report.json \
+          --redact \
+          --exit-code=0 \
+          || echo "Gitleaks exited non-zero (captured for later evaluation)"
+
+    # ------------------------------------------------------------------------
+    # Committed .env files across all history (ignoring example/sample/etc).
+    # ------------------------------------------------------------------------
+    - name: Check Git History for .env Files
+      shell: bash
+      run: |
+        set -uo pipefail
+        git log \
+          --all \
+          --diff-filter=A \
+          --name-only \
+          --pretty=format: \
+          | grep -E '(^|/)\.env([.-]|$)' \
+          | grep -Ev '\.env\.(example|sample|template|dist)$' \
+          | sort -u \
+          > env-committed.txt || true
+
+        if [ -s env-committed.txt ]; then
+          echo "::warning::Committed .env files detected in git history"
+          cat env-committed.txt
+        else
+          echo "No committed .env files found."
+        fi
+
+    # ------------------------------------------------------------------------
+    # Private key material in the working tree (skips .git / node_modules).
+    # ------------------------------------------------------------------------
+    - name: Check for Private Keys
+      shell: bash
+      run: |
+        set -uo pipefail
+        find . \
+          -type d \( -name .git -o -name node_modules \) -prune \
+          -o -type f \( \
+               -name "*.pem" \
+            -o -name "*.key" \
+            -o -name "*.p12" \
+            -o -name "*.pfx" \
+            -o -name "id_rsa" \
+            -o -name "id_dsa" \
+            -o -name "id_ecdsa" \
+            -o -name "id_ed25519" \
+          \) -print \
+          > private-keys.txt || true
+
+        if [ -s private-keys.txt ]; then
+          echo "::warning::Private key files found in working tree"
+          cat private-keys.txt
+        else
+          echo "No private key files found."
+        fi
+
+    # ------------------------------------------------------------------------
+    # TruffleHog: full history, verified-only to cut false positives.
+    # ------------------------------------------------------------------------
+    - name: TruffleHog Git History Scan
+      shell: bash
+      run: |
+        set -uo pipefail
+        trufflehog git "file://$(pwd)" \
+          --json \
+          --only-verified \
+          --no-update \
+          > trufflehog-history.json 2>trufflehog-history.log \
+          || echo "TruffleHog exited non-zero (captured for later evaluation)"
+
+    # ------------------------------------------------------------------------
+    # Tally findings and expose the count as an output. No pass/fail here —
+    # the caller job decides whether to warn (push) or block (pull_request).
+    # Report files are left in the workspace for the caller to collect/upload.
+    # ------------------------------------------------------------------------
+    - name: Evaluate Results
+      id: evaluate
+      shell: bash
+      run: |
+        set -uo pipefail
+        FINDINGS=0
+        # NOTE: this action intentionally does NOT write to $GITHUB_STEP_SUMMARY.
+        # The Stage 4 "Security Gate" job rebuilds one combined summary for all
+        # stages, so per-stage summaries are only emitted to the console logs.
+
+        # ----- Gitleaks -----
+        echo "===== GITLEAKS ====="
+        GL_COUNT=0
+        if [ -f gitleaks-report.json ]; then
+          GL_COUNT=$(jq 'length' gitleaks-report.json 2>/dev/null || echo 0)
+        fi
+        if [ "$GL_COUNT" -gt 0 ]; then
+          echo "❌ Gitleaks found $GL_COUNT secret(s)"
+          FINDINGS=$((FINDINGS + GL_COUNT))
+        else
+          echo "✅ No Gitleaks findings"
+        fi
+
+        # ----- .env files -----
+        echo "===== ENV FILES ====="
+        if [ -s env-committed.txt ]; then
+          EN_COUNT=$(wc -l < env-committed.txt | tr -d ' ')
+          echo "❌ .env files detected in git history"
+          cat env-committed.txt
+          FINDINGS=$((FINDINGS + EN_COUNT))
+        else
+          echo "✅ No committed .env files"
+        fi
+
+        # ----- Private keys -----
+        echo "===== PRIVATE KEYS ====="
+        if [ -s private-keys.txt ]; then
+          PK_COUNT=$(wc -l < private-keys.txt | tr -d ' ')
+          echo "❌ Private key files found"
+          cat private-keys.txt
+          FINDINGS=$((FINDINGS + PK_COUNT))
+        else
+          echo "✅ No private key files"
+        fi
+
+        # ----- TruffleHog (verified findings only; one per JSON line) -----
+        echo "===== TRUFFLEHOG ====="
+        TH_COUNT=0
+        if [ -s trufflehog-history.json ]; then
+          # grep -c prints "0" AND exits non-zero on no-match; `|| true`
+          # swallows the exit so we keep a single clean integer.
+          TH_COUNT=$(grep -c '"SourceMetadata"' trufflehog-history.json 2>/dev/null || true)
+          TH_COUNT=${TH_COUNT:-0}
+        fi
+        if [ "$TH_COUNT" -gt 0 ]; then
+          echo "❌ TruffleHog found $TH_COUNT verified finding(s)"
+          FINDINGS=$((FINDINGS + TH_COUNT))
+        else
+          echo "✅ No TruffleHog findings"
+        fi
+
+        echo ""
+        echo "Total findings: $FINDINGS"
+        echo "findings=$FINDINGS" >> "$GITHUB_OUTPUT"
