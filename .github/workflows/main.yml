@@ -208,18 +208,18 @@ jobs:
           #   red FAIL (n) when blocking · green PASS when clean · grey SKIP when not run.
           cell() {
             if [ "${2:-true}" != "true" ]; then
-              echo "![SKIP](https://img.shields.io/badge/SKIP-8b949e?style=flat-square)";
+              echo "![SKIP](https://img.shields.io/badge/SKIP-8b949e?style=flat)";
             elif [ "${1:-0}" -gt 0 ]; then
-              echo "![FAIL](https://img.shields.io/badge/FAIL%20$1-d73a49?style=flat-square)";
+              echo "![FAIL](https://img.shields.io/badge/FAIL%20$1-d73a49?style=flat)";
             else
-              echo "![PASS](https://img.shields.io/badge/PASS-2ea44f?style=flat-square)";
+              echo "![PASS](https://img.shields.io/badge/PASS-2ea44f?style=flat)";
             fi
           }
 
           # Render a warning-count cell as a yellow chip when >0, an em dash when clean.
           warn_cell() {
             if [ "${1:-0}" -gt 0 ]; then
-              echo "![WARN](https://img.shields.io/badge/WARN%20$1-dbab09?style=flat-square)";
+              echo "![WARN](https://img.shields.io/badge/WARN%20$1-dbab09?style=flat)";
             else
               echo "—";
             fi
@@ -233,6 +233,9 @@ jobs:
           R=reports
           TOTAL_CRIT=$((SECRETS + DEP_CRITICAL + TRIVY_CRITICAL + STATIC_CRITICAL))
           TOTAL_WARN=$((DEP_WARNINGS + TRIVY_WARNINGS + STATIC_WARNINGS))
+          # Stage 2 combines npm + Trivy into a single line in the summary.
+          S2_CRIT=$((DEP_CRITICAL + TRIVY_CRITICAL))
+          S2_WARN=$((DEP_WARNINGS + TRIVY_WARNINGS))
 
           {
             echo "# Security &amp; Quality Report"
@@ -283,12 +286,11 @@ jobs:
             echo "| Stage | Check | Status | Warnings |"
             echo "|:-----:|:------|:------:|:--------:|"
             echo "| 1 | Secrets &amp; credentials | $(cell "$SECRETS") | — |"
-            echo "| 2 | npm dependencies | $(cell "$DEP_CRITICAL" "$STAGE2_RAN") | $(warn_cell "$DEP_WARNINGS") |"
-            echo "| 2 | Trivy (vuln / secret / misconfig / license) | $(cell "$TRIVY_CRITICAL" "$STAGE2_RAN") | $(warn_cell "$TRIVY_WARNINGS") |"
+            echo "| 2 | Dependencies &amp; vulnerabilities (npm + Trivy) | $(cell "$S2_CRIT" "$STAGE2_RAN") | $(warn_cell "$S2_WARN") |"
             echo "| 3 | Static analysis (ESLint / TypeScript / Prettier) | $(cell "$STATIC_CRITICAL" "$STAGE3_RAN") | $(warn_cell "$STATIC_WARNINGS") |"
             echo "| | **Total** | $(cell "$TOTAL_CRIT") | **$(warn_cell "$TOTAL_WARN")** |"
             echo ""
-            echo "<sub>![FAIL](https://img.shields.io/badge/FAIL-d73a49?style=flat-square) blocks merge &nbsp;·&nbsp; ![PASS](https://img.shields.io/badge/PASS-2ea44f?style=flat-square) clean &nbsp;·&nbsp; ![WARN](https://img.shields.io/badge/WARN-dbab09?style=flat-square) non-blocking &nbsp;·&nbsp; ![SKIP](https://img.shields.io/badge/SKIP-8b949e?style=flat-square) not run</sub>"
+            echo "<sub>![FAIL](https://img.shields.io/badge/FAIL-d73a49?style=flat) blocks merge &nbsp;·&nbsp; ![PASS](https://img.shields.io/badge/PASS-2ea44f?style=flat) clean &nbsp;·&nbsp; ![WARN](https://img.shields.io/badge/WARN-dbab09?style=flat) non-blocking &nbsp;·&nbsp; ![SKIP](https://img.shields.io/badge/SKIP-8b949e?style=flat) not run</sub>"
             echo ""
             echo "## Details"
 
@@ -330,7 +332,7 @@ jobs:
             # Stage 2 was skipped — show why and stop here.
             if [ "${STAGE2_RAN}" != "true" ]; then
               echo ""
-              echo "### Stage 2 &middot; Dependencies"
+              echo "### Stage 2 &middot; Dependencies &amp; Vulnerabilities"
               echo ""
               echo "_Skipped &mdash; Stage 1 found blocking issues._"
               echo ""
@@ -338,9 +340,13 @@ jobs:
               echo ""
               echo "_Skipped &mdash; Stage 1 found blocking issues._"
             else
-              # Stage 2 detail — npm audit.
+              # Stage 2 detail — npm + Trivy under one combined heading.
               echo ""
-              echo "### Stage 2 &middot; npm Dependencies"
+              echo "### Stage 2 &middot; Dependencies &amp; Vulnerabilities"
+              echo ""
+
+              # --- npm audit -----------------------------------------------------
+              echo "#### npm dependencies"
               echo ""
               if [ -s "$R/npm-audit.json" ]; then
                 ADV=$(jq '[.vulnerabilities // {} | to_entries[] | select(.value.severity=="critical" or .value.severity=="high")] | length' "$R/npm-audit.json" 2>/dev/null || echo 0)
@@ -383,24 +389,26 @@ jobs:
               fi
               echo ""
 
-              # Stage 2 detail — Trivy.
-              echo ""
-              echo "### Stage 2 &middot; Trivy (filesystem scan)"
+              # --- Trivy ---------------------------------------------------------
+              echo "#### Trivy (filesystem scan)"
               echo ""
               if [ -s "$R/trivy-report.json" ]; then
+                # Blocking: critical/high vulnerabilities.
                 TV=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "$R/trivy-report.json" 2>/dev/null || echo 0)
                 if [ "${TV:-0}" -gt 0 ]; then
-                  echo "**Critical / high vulnerabilities:**"
+                  echo "**Critical / high vulnerabilities (blocking):**"
                   echo ""
-                  echo "| ID | Package | Installed | Fixed | Severity |"
-                  echo "|----|---------|-----------|-------|----------|"
+                  echo "| ID | Package | Installed | Fixed | Severity | Title |"
+                  echo "|----|---------|-----------|-------|----------|-------|"
                   jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")
-                    | "| \(.VulnerabilityID) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "none") | \(.Severity) |"' \
+                    | "| \(.VulnerabilityID) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "none") | \(.Severity) | \((.Title // "-")[0:60]) |"' \
                     "$R/trivy-report.json" 2>/dev/null | head -100
                   echo ""
                 else
-                  echo "- **Vulnerabilities** &mdash; no critical/high findings"
+                  echo "- **Vulnerabilities (critical/high)** &mdash; none"
                 fi
+
+                # Blocking: secrets.
                 TS=$(jq '[.Results[]?.Secrets[]?] | length' "$R/trivy-report.json" 2>/dev/null || echo 0)
                 if [ "${TS:-0}" -gt 0 ]; then
                   echo "- **Secrets** &mdash; ${TS} finding(s):"
@@ -408,12 +416,67 @@ jobs:
                 else
                   echo "- **Secrets** &mdash; none"
                 fi
+
+                # Blocking: critical/high misconfigurations.
                 TM=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "$R/trivy-report.json" 2>/dev/null || echo 0)
                 if [ "${TM:-0}" -gt 0 ]; then
-                  echo "- **Misconfigurations** &mdash; ${TM} critical/high:"
+                  echo "- **Misconfigurations (critical/high)** &mdash; ${TM}:"
                   jq -r '.Results[]?.Misconfigurations[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH") | "    - \(.ID): \(.Title) (\(.Severity))"' "$R/trivy-report.json" 2>/dev/null | head -50
                 else
-                  echo "- **Misconfigurations** &mdash; no critical/high findings"
+                  echo "- **Misconfigurations (critical/high)** &mdash; none"
+                fi
+                echo ""
+
+                # ---- Warnings (non-blocking): what they are and why ----
+                echo "**Warnings (non-blocking):**"
+                echo ""
+
+                # Medium/low vulnerabilities — what package, what fix, why (title).
+                TVW=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM" or .Severity=="LOW")] | length' "$R/trivy-report.json" 2>/dev/null || echo 0)
+                if [ "${TVW:-0}" -gt 0 ]; then
+                  echo "<details><summary>Medium / low vulnerabilities (${TVW})</summary>"
+                  echo ""
+                  echo "| ID | Package | Installed | Fixed | Severity | Why (title) |"
+                  echo "|----|---------|-----------|-------|----------|-------------|"
+                  jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM" or .Severity=="LOW")
+                    | "| \(.VulnerabilityID) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "none") | \(.Severity) | \((.Title // .Description // "-")[0:70]) |"' \
+                    "$R/trivy-report.json" 2>/dev/null | head -200
+                  echo ""
+                  echo "</details>"
+                else
+                  echo "- **Medium / low vulnerabilities** &mdash; none"
+                fi
+
+                # Medium/low misconfigurations — what, where, and how to resolve.
+                TMW=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="MEDIUM" or .Severity=="LOW")] | length' "$R/trivy-report.json" 2>/dev/null || echo 0)
+                if [ "${TMW:-0}" -gt 0 ]; then
+                  echo "<details><summary>Medium / low misconfigurations (${TMW})</summary>"
+                  echo ""
+                  echo "| ID | Severity | Title | What &amp; how to fix |"
+                  echo "|----|----------|-------|------------------|"
+                  jq -r '.Results[]?.Misconfigurations[]? | select(.Severity=="MEDIUM" or .Severity=="LOW")
+                    | "| \(.ID) | \(.Severity) | \((.Title // "-")[0:50]) | \(((.Resolution // .Description // .Message // "-") | gsub("[\\r\\n|]"; " "))[0:90]) |"' \
+                    "$R/trivy-report.json" 2>/dev/null | head -200
+                  echo ""
+                  echo "</details>"
+                else
+                  echo "- **Medium / low misconfigurations** &mdash; none"
+                fi
+
+                # License issues — which package, which license, severity.
+                TL=$(jq '[.Results[]?.Licenses[]?] | length' "$R/trivy-report.json" 2>/dev/null || echo 0)
+                if [ "${TL:-0}" -gt 0 ]; then
+                  echo "<details><summary>License issues (${TL})</summary>"
+                  echo ""
+                  echo "| Package | License | Severity | Category |"
+                  echo "|---------|---------|----------|----------|"
+                  jq -r '.Results[]?.Licenses[]?
+                    | "| \(.PkgName // .FilePath // "-") | \(.Name // "-") | \(.Severity // "-") | \(.Category // "-") |"' \
+                    "$R/trivy-report.json" 2>/dev/null | head -200
+                  echo ""
+                  echo "</details>"
+                else
+                  echo "- **License issues** &mdash; none"
                 fi
               else
                 echo "- _Trivy report not available._"
