@@ -93,12 +93,20 @@ runs:
         fi
 
     # ------------------------------------------------------------------------
-    # Private key material in the working tree (skips .git / node_modules).
+    # Private key FILES by name — both the working tree AND the full git
+    # history. History matters: a key committed and later deleted is gone from
+    # the tree but still recoverable from any commit, so it must still block.
+    # (Mirrors the .env history check above.) Results merged into one list.
     # ------------------------------------------------------------------------
-    - name: Check for Private Keys
+    - name: Check for Private Key Files (tree + history)
       shell: bash
       run: |
         set -uo pipefail
+
+        # Filename pattern shared by both scans.
+        KEY_RE='(^|/)([^/]+\.(pem|key|p12|pfx)|id_rsa|id_dsa|id_ecdsa|id_ed25519)$'
+
+        # --- working tree -----------------------------------------------------
         find . \
           -type d \( -name .git -o -name node_modules \) -prune \
           -o -type f \( \
@@ -111,13 +119,48 @@ runs:
             -o -name "id_ecdsa" \
             -o -name "id_ed25519" \
           \) -print \
+          | sed 's#^\./##' \
+          > private-keys-tree.txt || true
+
+        # --- full git history (every path ever touched in any commit) ---------
+        git log --all --name-only --pretty=format: \
+          | grep -E "$KEY_RE" \
+          | grep -Ev '(^|/)node_modules/' \
+          | sort -u \
+          > private-keys-history.txt || true
+
+        # --- merge both into the canonical list the evaluator counts ----------
+        cat private-keys-tree.txt private-keys-history.txt \
+          | sed '/^$/d' \
+          | sort -u \
           > private-keys.txt || true
 
         if [ -s private-keys.txt ]; then
-          echo "::warning::Private key files found in working tree"
+          echo "::warning::Private key files found in working tree and/or git history"
           cat private-keys.txt
         else
           echo "No private key files found."
+        fi
+
+    # ------------------------------------------------------------------------
+    # Private key MATERIAL (content) across full history. Catches a PEM block
+    # introduced in ANY commit even if the file was later removed/renamed.
+    # `-G` matches commits whose diff added/removed a line matching the regex.
+    # ------------------------------------------------------------------------
+    - name: Check Git History for Private Key Material
+      shell: bash
+      run: |
+        set -uo pipefail
+        git log --all --no-color \
+          --format='COMMIT %H' \
+          -G '-----BEGIN ([A-Z ]+ )?PRIVATE KEY-----' \
+          > private-key-content.txt || true
+
+        if [ -s private-key-content.txt ]; then
+          echo "::warning::Private key material found in git history"
+          cat private-key-content.txt
+        else
+          echo "No private key material found in git history."
         fi
 
     # ------------------------------------------------------------------------
@@ -173,15 +216,31 @@ runs:
           echo "✅ No committed .env files"
         fi
 
-        # ----- Private keys -----
-        echo "===== PRIVATE KEYS ====="
+        # ----- Private key files (tree + history) -----
+        echo "===== PRIVATE KEY FILES ====="
         if [ -s private-keys.txt ]; then
           PK_COUNT=$(wc -l < private-keys.txt | tr -d ' ')
-          echo "❌ Private key files found"
+          echo "❌ Private key files found (working tree and/or git history)"
           cat private-keys.txt
           FINDINGS=$((FINDINGS + PK_COUNT))
         else
           echo "✅ No private key files"
+        fi
+
+        # ----- Private key material in history (PEM blocks) -----
+        echo "===== PRIVATE KEY MATERIAL (HISTORY) ====="
+        if [ -s private-key-content.txt ]; then
+          PKM_COUNT=$(grep -c '^COMMIT ' private-key-content.txt 2>/dev/null || true)
+          PKM_COUNT=${PKM_COUNT:-0}
+          if [ "$PKM_COUNT" -gt 0 ]; then
+            echo "❌ Private key material found in $PKM_COUNT commit(s)"
+            cat private-key-content.txt
+            FINDINGS=$((FINDINGS + PKM_COUNT))
+          else
+            echo "✅ No private key material in history"
+          fi
+        else
+          echo "✅ No private key material in history"
         fi
 
         # ----- TruffleHog (verified findings only; one per JSON line) -----
