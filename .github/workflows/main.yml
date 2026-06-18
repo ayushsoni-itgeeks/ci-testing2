@@ -50,6 +50,10 @@ jobs:
             trufflehog-history.log
             env-committed.txt
             private-keys.txt
+            private-keys-tree.txt
+            private-keys-detail.tsv
+            private-keys-history.tsv
+            private-key-content.txt
           if-no-files-found: ignore
           retention-days: 1
 
@@ -315,11 +319,31 @@ jobs:
             else
               echo "- **Committed .env files** &mdash; none"
             fi
-            if [ -s "$R/private-keys.txt" ]; then
-              echo "- **Private key files in tree** &mdash; found:"
-              sed 's/^/    - /' "$R/private-keys.txt"
+            if [ -s "$R/private-keys-detail.tsv" ]; then
+              echo "**Private key files** &mdash; found in the working tree and/or git history:"
+              echo ""
+              echo "| File | Commit | Date | Where |"
+              echo "|------|--------|------|-------|"
+              # detail.tsv columns: file \t sha \t date \t where
+              awk -F'\t' '{
+                sha = ($2=="-") ? "—" : "`" $2 "`"
+                dt  = ($3=="-") ? "—" : $3
+                printf "| `%s` | %s | %s | %s |\n", $1, sha, dt, $4
+              }' "$R/private-keys-detail.tsv" | head -100
+              echo ""
             else
-              echo "- **Private key files** &mdash; none"
+              echo "- **Private key files (tree + history)** &mdash; none"
+            fi
+            if [ -s "$R/private-key-content.txt" ]; then
+              echo "**Private key material (PEM blocks)** &mdash; found in git history:"
+              echo ""
+              echo "| Commit | File |"
+              echo "|--------|------|"
+              # content.txt columns: sha \t file
+              awk -F'\t' '{ printf "| `%s` | `%s` |\n", $1, $2 }' "$R/private-key-content.txt" | head -100
+              echo ""
+            else
+              echo "- **Private key material in history** &mdash; none"
             fi
             if [ -s "$R/trufflehog-history.json" ] && grep -q '"SourceMetadata"' "$R/trufflehog-history.json" 2>/dev/null; then
               TH=$(grep -c '"SourceMetadata"' "$R/trufflehog-history.json" 2>/dev/null || echo 0)
