@@ -204,12 +204,17 @@ jobs:
           STATIC_CRITICAL="${STATIC_CRITICAL:-0}"
           STATIC_WARNINGS="${STATIC_WARNINGS:-0}"
 
-          # Render a table cell: "❌ N" when blocking, "✅ Pass" when clean,
-          # "⏭ Skipped" when the stage never ran due to early stop.
+          # Render a table status cell with a consistent, text-based vocabulary:
+          #   FAIL (n) when blocking · PASS when clean · SKIP when the stage never ran.
           cell() {
-            if [ "${2:-true}" != "true" ]; then echo "⏭ Skipped";
-            elif [ "${1:-0}" -gt 0 ]; then echo "❌ $1";
-            else echo "✅ Pass"; fi
+            if [ "${2:-true}" != "true" ]; then echo "SKIP";
+            elif [ "${1:-0}" -gt 0 ]; then echo "\`FAIL\` ($1)";
+            else echo "\`PASS\`"; fi
+          }
+
+          # Render a warning-count cell: "n" when >0, an em dash when clean.
+          warn_cell() {
+            if [ "${1:-0}" -gt 0 ]; then echo "$1"; else echo "—"; fi
           }
 
           SHORT_SHA="${GITHUB_SHA:0:7}"
@@ -222,59 +227,69 @@ jobs:
           TOTAL_WARN=$((DEP_WARNINGS + TRIVY_WARNINGS + STATIC_WARNINGS))
 
           {
-            echo "# 🛡️ Security & Quality Report"
+            echo "# Security &amp; Quality Report"
             echo ""
-            echo "Commit \`${SHORT_SHA}\` on \`${GITHUB_REF_NAME}\` · triggered by \`${GITHUB_EVENT_NAME}\` · [view run](${RUN_URL})"
+
+            # Run metadata as a compact key/value table.
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Commit** | \`${SHORT_SHA}\` |"
+            echo "| **Branch** | \`${GITHUB_REF_NAME}\` |"
+            echo "| **Trigger** | \`${GITHUB_EVENT_NAME}\` |"
+            echo "| **Run** | [#${GITHUB_RUN_ID}](${RUN_URL}) |"
             echo ""
 
             # Verdict: headline + the list of blockers to fix.
             if [ "$TOTAL_CRIT" -gt 0 ]; then
-              echo "## ❌ Merge blocked"
+              echo "## Result: FAILED &mdash; merge blocked"
               echo ""
-              echo "**${TOTAL_CRIT} blocking finding(s)** and **${TOTAL_WARN} warning(s)** detected. Resolve the items below before merging:"
+              echo "**${TOTAL_CRIT}** blocking finding(s) and **${TOTAL_WARN}** warning(s) detected."
+              echo "Resolve the blocking items below before merging."
               echo ""
-              [ "$SECRETS" -gt 0 ]        && echo "- ❌ **Secrets:** ${SECRETS} finding(s) — _Stage 1_"
-              [ "$DEP_CRITICAL" -gt 0 ]   && echo "- ❌ **npm vulnerabilities:** ${DEP_CRITICAL} critical/high — _Stage 2_"
-              [ "$TRIVY_CRITICAL" -gt 0 ] && echo "- ❌ **Trivy:** ${TRIVY_CRITICAL} critical (vuln / secret / misconfig) — _Stage 2_"
-              [ "$ESLINT_ERRORS" -gt 0 ]  && echo "- ❌ **ESLint:** ${ESLINT_ERRORS} error(s) — _Stage 3_"
-              [ "$TS_ERRORS" -gt 0 ]      && echo "- ❌ **TypeScript:** ${TS_ERRORS} type error(s) — _Stage 3_"
+              echo "**Action required:**"
+              echo ""
+              [ "$SECRETS" -gt 0 ]        && echo "- **Secrets** &mdash; ${SECRETS} finding(s) _(Stage 1)_"
+              [ "$DEP_CRITICAL" -gt 0 ]   && echo "- **npm vulnerabilities** &mdash; ${DEP_CRITICAL} critical/high _(Stage 2)_"
+              [ "$TRIVY_CRITICAL" -gt 0 ] && echo "- **Trivy** &mdash; ${TRIVY_CRITICAL} critical (vuln / secret / misconfig) _(Stage 2)_"
+              [ "$ESLINT_ERRORS" -gt 0 ]  && echo "- **ESLint** &mdash; ${ESLINT_ERRORS} error(s) _(Stage 3)_"
+              [ "$TS_ERRORS" -gt 0 ]      && echo "- **TypeScript** &mdash; ${TS_ERRORS} type error(s) _(Stage 3)_"
             else
-              echo "## ✅ Merge allowed"
+              echo "## Result: PASSED &mdash; merge allowed"
               echo ""
-              echo "No blocking findings. **${TOTAL_WARN} warning(s)** detected (non-blocking — worth reviewing when convenient)."
+              echo "No blocking findings. **${TOTAL_WARN}** warning(s) detected (non-blocking; review when convenient)."
             fi
             echo ""
 
             # Note when the pipeline stopped early so empty rows aren't misread as "clean".
             if [ "${STAGE2_RAN}" != "true" ]; then
-              echo "> ⏭ Pipeline stopped after Stage 1 — Stages 2 & 3 were skipped."
+              echo "> **Note:** Pipeline stopped after Stage 1 &mdash; Stages 2 &amp; 3 were skipped."
               echo ""
             elif [ "${STAGE3_RAN}" != "true" ]; then
-              echo "> ⏭ Pipeline stopped after Stage 2 — Stage 3 was skipped."
+              echo "> **Note:** Pipeline stopped after Stage 2 &mdash; Stage 3 was skipped."
               echo ""
             fi
 
             # At-a-glance summary table.
             echo "## Summary"
             echo ""
-            echo "| Stage | Check | Blocking | Warnings |"
-            echo "|:-----:|:------|:--------:|:--------:|"
-            echo "| 1 | Secrets & credentials | $(cell "$SECRETS") | — |"
-            echo "| 2 | npm dependencies | $(cell "$DEP_CRITICAL" "$STAGE2_RAN") | ⚠️ ${DEP_WARNINGS} |"
-            echo "| 2 | Trivy (vuln / secret / misconfig / license) | $(cell "$TRIVY_CRITICAL" "$STAGE2_RAN") | ⚠️ ${TRIVY_WARNINGS} |"
-            echo "| 3 | Static analysis (ESLint / TypeScript / Prettier) | $(cell "$STATIC_CRITICAL" "$STAGE3_RAN") | ⚠️ ${STATIC_WARNINGS} |"
-            echo "| | **Total** | $(cell "$TOTAL_CRIT") | ⚠️ **${TOTAL_WARN}** |"
+            echo "| Stage | Check | Status | Warnings |"
+            echo "|:-----:|:------|:------:|:--------:|"
+            echo "| 1 | Secrets &amp; credentials | $(cell "$SECRETS") | — |"
+            echo "| 2 | npm dependencies | $(cell "$DEP_CRITICAL" "$STAGE2_RAN") | $(warn_cell "$DEP_WARNINGS") |"
+            echo "| 2 | Trivy (vuln / secret / misconfig / license) | $(cell "$TRIVY_CRITICAL" "$STAGE2_RAN") | $(warn_cell "$TRIVY_WARNINGS") |"
+            echo "| 3 | Static analysis (ESLint / TypeScript / Prettier) | $(cell "$STATIC_CRITICAL" "$STAGE3_RAN") | $(warn_cell "$STATIC_WARNINGS") |"
+            echo "| | **Total** | $(cell "$TOTAL_CRIT") | **$(warn_cell "$TOTAL_WARN")** |"
             echo ""
-            echo "<sub>❌ blocks merge &nbsp;·&nbsp; ⚠️ warning (non-blocking) &nbsp;·&nbsp; ✅ clean &nbsp;·&nbsp; ⏭ skipped</sub>"
+            echo "<sub>\`FAIL\` blocks merge &nbsp;·&nbsp; \`PASS\` clean &nbsp;·&nbsp; \`SKIP\` not run &nbsp;·&nbsp; warnings are non-blocking</sub>"
             echo ""
             echo "## Details"
 
             # Stage 1 detail — secrets.
             echo ""
-            echo "### 🔑 Stage 1 · Secrets & Credentials"
+            echo "### Stage 1 &middot; Secrets &amp; Credentials"
+            echo ""
             if [ -s "$R/gitleaks-report.json" ] && [ "$(jq 'length' "$R/gitleaks-report.json" 2>/dev/null || echo 0)" -gt 0 ]; then
-              echo ""
-              echo "**Gitleaks findings:**"
+              echo "**Gitleaks** &mdash; secrets found in git history:"
               echo ""
               echo "| Rule | File | Line | Commit |"
               echo "|------|------|------|--------|"
@@ -282,45 +297,47 @@ jobs:
                 "$R/gitleaks-report.json" 2>/dev/null | head -100
               echo ""
             else
-              echo "- ✅ Gitleaks: no secrets in git history"
+              echo "- **Gitleaks** &mdash; no secrets in git history"
             fi
             if [ -s "$R/env-committed.txt" ]; then
-              echo "- ❌ Committed .env files:"
+              echo "- **Committed .env files** &mdash; found:"
               sed 's/^/    - /' "$R/env-committed.txt"
             else
-              echo "- ✅ No committed .env files"
+              echo "- **Committed .env files** &mdash; none"
             fi
             if [ -s "$R/private-keys.txt" ]; then
-              echo "- ❌ Private key files in tree:"
+              echo "- **Private key files in tree** &mdash; found:"
               sed 's/^/    - /' "$R/private-keys.txt"
             else
-              echo "- ✅ No private key files"
+              echo "- **Private key files** &mdash; none"
             fi
             if [ -s "$R/trufflehog-history.json" ] && grep -q '"SourceMetadata"' "$R/trufflehog-history.json" 2>/dev/null; then
               TH=$(grep -c '"SourceMetadata"' "$R/trufflehog-history.json" 2>/dev/null || echo 0)
-              echo "- ❌ TruffleHog verified secrets: $TH"
+              echo "- **TruffleHog** &mdash; ${TH} verified secret(s)"
             else
-              echo "- ✅ TruffleHog: no verified secrets"
+              echo "- **TruffleHog** &mdash; no verified secrets"
             fi
             echo ""
 
             # Stage 2 was skipped — show why and stop here.
             if [ "${STAGE2_RAN}" != "true" ]; then
               echo ""
-              echo "### 📦 Stage 2 · Dependencies"
-              echo "- ⏭ Skipped (Stage 1 found blocking issues)."
+              echo "### Stage 2 &middot; Dependencies"
               echo ""
-              echo "### 🔍 Stage 3 · Static Code Analysis"
-              echo "- ⏭ Skipped (Stage 1 found blocking issues)."
+              echo "_Skipped &mdash; Stage 1 found blocking issues._"
+              echo ""
+              echo "### Stage 3 &middot; Static Code Analysis"
+              echo ""
+              echo "_Skipped &mdash; Stage 1 found blocking issues._"
             else
               # Stage 2 detail — npm audit.
               echo ""
-              echo "### 📦 Stage 2 · npm Dependencies"
+              echo "### Stage 2 &middot; npm Dependencies"
+              echo ""
               if [ -s "$R/npm-audit.json" ]; then
                 ADV=$(jq '[.vulnerabilities // {} | to_entries[] | select(.value.severity=="critical" or .value.severity=="high")] | length' "$R/npm-audit.json" 2>/dev/null || echo 0)
                 if [ "${ADV:-0}" -gt 0 ]; then
-                  echo ""
-                  echo "**Critical/High vulnerable packages:**"
+                  echo "**Critical / high vulnerable packages:**"
                   echo ""
                   echo "| Package | Severity | Via | Fix available |"
                   echo "|---------|----------|-----|---------------|"
@@ -330,11 +347,11 @@ jobs:
                     "$R/npm-audit.json" 2>/dev/null | head -100
                   echo ""
                 else
-                  echo "- ✅ npm audit: no critical/high vulnerabilities"
+                  echo "- **npm audit** &mdash; no critical/high vulnerabilities"
                 fi
               fi
               if [ -s "$R/npm-outdated.json" ] && [ "$(jq 'keys|length' "$R/npm-outdated.json" 2>/dev/null || echo 0)" -gt 0 ]; then
-                echo "<details><summary>⚠️ Outdated packages</summary>"
+                echo "<details><summary>Outdated packages (warning)</summary>"
                 echo ""
                 echo "| Package | Current | Wanted | Latest |"
                 echo "|---------|---------|--------|--------|"
@@ -343,27 +360,29 @@ jobs:
                 echo ""
                 echo "</details>"
               else
-                echo "- ✅ No outdated packages"
+                echo "- **Outdated packages** &mdash; none"
               fi
               if [ -s "$R/deprecated.txt" ]; then
-                echo "<details><summary>⚠️ Deprecated packages</summary>"
+                echo "<details><summary>Deprecated packages (warning)</summary>"
                 echo ""
-                sed 's/^/    /' "$R/deprecated.txt"
+                echo '```'
+                cat "$R/deprecated.txt"
+                echo '```'
                 echo ""
                 echo "</details>"
               else
-                echo "- ✅ No deprecated packages"
+                echo "- **Deprecated packages** &mdash; none"
               fi
               echo ""
 
               # Stage 2 detail — Trivy.
               echo ""
-              echo "### 🐳 Stage 2 · Trivy (filesystem scan)"
+              echo "### Stage 2 &middot; Trivy (filesystem scan)"
+              echo ""
               if [ -s "$R/trivy-report.json" ]; then
                 TV=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "$R/trivy-report.json" 2>/dev/null || echo 0)
                 if [ "${TV:-0}" -gt 0 ]; then
-                  echo ""
-                  echo "**Critical/High vulnerabilities:**"
+                  echo "**Critical / high vulnerabilities:**"
                   echo ""
                   echo "| ID | Package | Installed | Fixed | Severity |"
                   echo "|----|---------|-----------|-------|----------|"
@@ -372,42 +391,42 @@ jobs:
                     "$R/trivy-report.json" 2>/dev/null | head -100
                   echo ""
                 else
-                  echo "- ✅ Trivy: no critical/high vulnerabilities"
+                  echo "- **Vulnerabilities** &mdash; no critical/high findings"
                 fi
                 TS=$(jq '[.Results[]?.Secrets[]?] | length' "$R/trivy-report.json" 2>/dev/null || echo 0)
                 if [ "${TS:-0}" -gt 0 ]; then
-                  echo "- ❌ Trivy secrets: $TS"
+                  echo "- **Secrets** &mdash; ${TS} finding(s):"
                   jq -r '.Results[]?.Secrets[]? | "    - \(.RuleID): \(.Title) (\(.Severity))"' "$R/trivy-report.json" 2>/dev/null | head -50
                 else
-                  echo "- ✅ Trivy: no secrets"
+                  echo "- **Secrets** &mdash; none"
                 fi
                 TM=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "$R/trivy-report.json" 2>/dev/null || echo 0)
                 if [ "${TM:-0}" -gt 0 ]; then
-                  echo "- ❌ Trivy misconfigurations (critical/high): $TM"
+                  echo "- **Misconfigurations** &mdash; ${TM} critical/high:"
                   jq -r '.Results[]?.Misconfigurations[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH") | "    - \(.ID): \(.Title) (\(.Severity))"' "$R/trivy-report.json" 2>/dev/null | head -50
                 else
-                  echo "- ✅ Trivy: no critical/high misconfigurations"
+                  echo "- **Misconfigurations** &mdash; no critical/high findings"
                 fi
               else
-                echo "- ⚠️ Trivy report not available"
+                echo "- _Trivy report not available._"
               fi
               echo ""
 
               # Stage 3 detail — static analysis (or skip note if Stage 2 blocked).
               echo ""
-              echo "### 🔍 Stage 3 · Static Code Analysis"
+              echo "### Stage 3 &middot; Static Code Analysis"
+              echo ""
               if [ "${STAGE3_RAN}" != "true" ]; then
-                echo "- ⏭ Skipped (Stage 2 found blocking issues)."
+                echo "_Skipped &mdash; Stage 2 found blocking issues._"
               else
-                echo ""
                 echo "| Tool | Errors (blocking) | Warnings |"
-                echo "|------|-------------------|----------|"
-                echo "| ESLint | $( [ "$ESLINT_ERRORS" -gt 0 ] && echo "❌ $ESLINT_ERRORS" || echo "✅ 0" ) | ⚠️ $ESLINT_WARNINGS |"
-                echo "| TypeScript (tsc) | $( [ "$TS_ERRORS" -gt 0 ] && echo "❌ $TS_ERRORS" || echo "✅ 0" ) | — |"
-                echo "| Prettier | — | ⚠️ $PRETTIER_ISSUES |"
+                echo "|------|:-----------------:|:--------:|"
+                echo "| ESLint | $( [ "$ESLINT_ERRORS" -gt 0 ] && echo "\`FAIL\` ($ESLINT_ERRORS)" || echo "\`PASS\`" ) | $(warn_cell "$ESLINT_WARNINGS") |"
+                echo "| TypeScript (tsc) | $( [ "$TS_ERRORS" -gt 0 ] && echo "\`FAIL\` ($TS_ERRORS)" || echo "\`PASS\`" ) | — |"
+                echo "| Prettier | — | $(warn_cell "$PRETTIER_ISSUES") |"
                 echo ""
                 if [ -s "$R/eslint-report.json" ] && [ "$ESLINT_ERRORS" -gt 0 ]; then
-                  echo "<details><summary>❌ ESLint errors</summary>"
+                  echo "<details><summary>ESLint errors</summary>"
                   echo ""
                   echo "| File | Line | Rule | Message |"
                   echo "|------|------|------|---------|"
@@ -418,7 +437,7 @@ jobs:
                   echo "</details>"
                 fi
                 if [ -s "$R/tsc.log" ] && [ "$TS_ERRORS" -gt 0 ]; then
-                  echo "<details><summary>❌ TypeScript errors</summary>"
+                  echo "<details><summary>TypeScript errors</summary>"
                   echo ""
                   echo '```'
                   grep -E 'error TS[0-9]+' "$R/tsc.log" 2>/dev/null | head -100
@@ -427,7 +446,7 @@ jobs:
                   echo "</details>"
                 fi
                 if [ -s "$R/prettier.log" ] && [ "$PRETTIER_ISSUES" -gt 0 ]; then
-                  echo "<details><summary>⚠️ Files needing Prettier formatting</summary>"
+                  echo "<details><summary>Files needing Prettier formatting</summary>"
                   echo ""
                   echo '```'
                   grep -E '^\[warn\] ' "$R/prettier.log" 2>/dev/null | head -100
@@ -436,13 +455,13 @@ jobs:
                   echo "</details>"
                 fi
                 if [ "$STATIC_CRITICAL" -eq 0 ] && [ "$STATIC_WARNINGS" -eq 0 ]; then
-                  echo "- ✅ No static analysis findings"
+                  echo "- No static analysis findings."
                 fi
               fi
             fi
             echo ""
             echo "---"
-            echo "<sub>📎 Full machine-readable reports are attached as build artifacts &nbsp;·&nbsp; generated by the Security & Quality Pipeline.</sub>"
+            echo "<sub>Full machine-readable reports are attached as build artifacts &nbsp;·&nbsp; generated by the Security &amp; Quality Pipeline.</sub>"
           } > "$REPORT"
 
           # Mirror the full summary into the GitHub job summary UI.
@@ -477,9 +496,9 @@ jobs:
 
           if [ "$BLOCK" -gt 0 ]; then
             echo "::error::SECURITY GATE FAILED:${REASONS}"
-            echo "**❌ SECURITY GATE FAILED:${REASONS}**" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Security gate: FAILED** —${REASONS}" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           else
-            echo "✅ SECURITY GATE PASSED — no blocking findings."
-            echo "**✅ SECURITY GATE PASSED — no blocking findings.**" >> "$GITHUB_STEP_SUMMARY"
+            echo "SECURITY GATE PASSED — no blocking findings."
+            echo "**Security gate: PASSED** — no blocking findings." >> "$GITHUB_STEP_SUMMARY"
           fi
