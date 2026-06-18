@@ -204,17 +204,25 @@ jobs:
           STATIC_CRITICAL="${STATIC_CRITICAL:-0}"
           STATIC_WARNINGS="${STATIC_WARNINGS:-0}"
 
-          # Render a table status cell with a consistent, text-based vocabulary:
-          #   FAIL (n) when blocking · PASS when clean · SKIP when the stage never ran.
+          # Render a status cell as a colour-coded badge chip:
+          #   red FAIL (n) when blocking · green PASS when clean · grey SKIP when not run.
           cell() {
-            if [ "${2:-true}" != "true" ]; then echo "SKIP";
-            elif [ "${1:-0}" -gt 0 ]; then echo "\`FAIL\` ($1)";
-            else echo "\`PASS\`"; fi
+            if [ "${2:-true}" != "true" ]; then
+              echo "![SKIP](https://img.shields.io/badge/SKIP-8b949e?style=flat-square)";
+            elif [ "${1:-0}" -gt 0 ]; then
+              echo "![FAIL](https://img.shields.io/badge/FAIL%20$1-d73a49?style=flat-square)";
+            else
+              echo "![PASS](https://img.shields.io/badge/PASS-2ea44f?style=flat-square)";
+            fi
           }
 
-          # Render a warning-count cell: "n" when >0, an em dash when clean.
+          # Render a warning-count cell as a yellow chip when >0, an em dash when clean.
           warn_cell() {
-            if [ "${1:-0}" -gt 0 ]; then echo "$1"; else echo "—"; fi
+            if [ "${1:-0}" -gt 0 ]; then
+              echo "![WARN](https://img.shields.io/badge/WARN%20$1-dbab09?style=flat-square)";
+            else
+              echo "—";
+            fi
           }
 
           SHORT_SHA="${GITHUB_SHA:0:7}"
@@ -280,7 +288,7 @@ jobs:
             echo "| 3 | Static analysis (ESLint / TypeScript / Prettier) | $(cell "$STATIC_CRITICAL" "$STAGE3_RAN") | $(warn_cell "$STATIC_WARNINGS") |"
             echo "| | **Total** | $(cell "$TOTAL_CRIT") | **$(warn_cell "$TOTAL_WARN")** |"
             echo ""
-            echo "<sub>\`FAIL\` blocks merge &nbsp;·&nbsp; \`PASS\` clean &nbsp;·&nbsp; \`SKIP\` not run &nbsp;·&nbsp; warnings are non-blocking</sub>"
+            echo "<sub>![FAIL](https://img.shields.io/badge/FAIL-d73a49?style=flat-square) blocks merge &nbsp;·&nbsp; ![PASS](https://img.shields.io/badge/PASS-2ea44f?style=flat-square) clean &nbsp;·&nbsp; ![WARN](https://img.shields.io/badge/WARN-dbab09?style=flat-square) non-blocking &nbsp;·&nbsp; ![SKIP](https://img.shields.io/badge/SKIP-8b949e?style=flat-square) not run</sub>"
             echo ""
             echo "## Details"
 
@@ -421,8 +429,8 @@ jobs:
               else
                 echo "| Tool | Errors (blocking) | Warnings |"
                 echo "|------|:-----------------:|:--------:|"
-                echo "| ESLint | $( [ "$ESLINT_ERRORS" -gt 0 ] && echo "\`FAIL\` ($ESLINT_ERRORS)" || echo "\`PASS\`" ) | $(warn_cell "$ESLINT_WARNINGS") |"
-                echo "| TypeScript (tsc) | $( [ "$TS_ERRORS" -gt 0 ] && echo "\`FAIL\` ($TS_ERRORS)" || echo "\`PASS\`" ) | — |"
+                echo "| ESLint | $(cell "$ESLINT_ERRORS") | $(warn_cell "$ESLINT_WARNINGS") |"
+                echo "| TypeScript (tsc) | $(cell "$TS_ERRORS") | — |"
                 echo "| Prettier | — | $(warn_cell "$PRETTIER_ISSUES") |"
                 echo ""
                 if [ -s "$R/eslint-report.json" ] && [ "$ESLINT_ERRORS" -gt 0 ]; then
