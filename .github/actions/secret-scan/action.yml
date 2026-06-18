@@ -103,8 +103,9 @@ runs:
       run: |
         set -uo pipefail
 
-        # Filename pattern shared by both scans.
-        KEY_RE='(^|/)([^/]+\.(pem|key|p12|pfx)|id_rsa|id_dsa|id_ecdsa|id_ed25519)$'
+        # Filename pattern shared by both scans. `[.]` is a literal dot that
+        # needs no backslash — avoids awk's "escape sequence" warning.
+        KEY_RE='(^|/)([^/]+[.](pem|key|p12|pfx)|id_rsa|id_dsa|id_ecdsa|id_ed25519)$'
 
         # --- working tree -----------------------------------------------------
         find . \
@@ -122,22 +123,45 @@ runs:
           | sed 's#^\./##' \
           > private-keys-tree.txt || true
 
-        # --- full git history (every path ever touched in any commit) ---------
-        git log --all --name-only --pretty=format: \
-          | grep -E "$KEY_RE" \
-          | grep -Ev '(^|/)node_modules/' \
+        # --- full git history: capture the COMMIT that introduced each key -----
+        # `--diff-filter=A` = additions only, so each row is "key first appeared
+        # in this commit". awk carries the current commit (short sha + subject)
+        # down to the file lines that follow it. Output TSV: file \t sha \t subject
+        git log --all --diff-filter=A --date=short \
+          --format='COMMIT%x09%h%x09%ad%x09%s' --name-only \
+          | awk -F'\t' -v re="$KEY_RE" '
+              $1 == "COMMIT" { sha=$2; date=$3; subj=$4; next }
+              $0 ~ re && $0 !~ /(^|\/)node_modules\// { print $0 "\t" sha "\t" date "\t" subj }
+            ' \
           | sort -u \
-          > private-keys-history.txt || true
+          > private-keys-history.tsv || true
 
-        # --- merge both into the canonical list the evaluator counts ----------
-        cat private-keys-tree.txt private-keys-history.txt \
+        # --- working-tree rows (no commit — file is present in the checkout) ---
+        # Only list tree files that are NOT already recorded from history, so the
+        # detail table doesn't show the same path twice.
+        : > private-keys-tree.tsv
+        if [ -s private-keys-tree.txt ]; then
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if ! cut -f1 private-keys-history.tsv 2>/dev/null | grep -qxF "$f"; then
+              printf '%s\t-\t-\tworking tree (current checkout)\n' "$f" >> private-keys-tree.tsv
+            fi
+          done < private-keys-tree.txt
+        fi
+
+        # --- combined detail (file \t sha \t date \t where) for the report -----
+        cat private-keys-history.tsv private-keys-tree.tsv \
           | sed '/^$/d' \
           | sort -u \
-          > private-keys.txt || true
+          > private-keys-detail.tsv || true
 
-        if [ -s private-keys.txt ]; then
+        # --- canonical list the evaluator counts: unique file paths ------------
+        cut -f1 private-keys-detail.tsv | sort -u | sed '/^$/d' > private-keys.txt || true
+
+        if [ -s private-keys-detail.tsv ]; then
           echo "::warning::Private key files found in working tree and/or git history"
-          cat private-keys.txt
+          echo "file<TAB>commit<TAB>date<TAB>where"
+          cat private-keys-detail.tsv
         else
           echo "No private key files found."
         fi
@@ -151,13 +175,20 @@ runs:
       shell: bash
       run: |
         set -uo pipefail
-        git log --all --no-color \
-          --format='COMMIT %H' \
-          -G '-----BEGIN ([A-Z ]+ )?PRIVATE KEY-----' \
-          > private-key-content.txt || true
+        PEM_RE='-----BEGIN ([A-Z ]+ )?PRIVATE KEY-----'
+
+        # git grep against every commit reports exact "<sha>:<path>" locations of
+        # the PEM header in that commit's snapshot — so we know commit AND file,
+        # not just "some commit". -I skips binaries; we never print the key body.
+        : > private-key-content.txt
+        for sha in $(git rev-list --all); do
+          git grep -I -l -E -e "$PEM_RE" "$sha" 2>/dev/null \
+            | sed "s/^${sha}:/${sha:0:10}\t/"
+        done | sort -u > private-key-content.txt || true
 
         if [ -s private-key-content.txt ]; then
           echo "::warning::Private key material found in git history"
+          echo "commit<TAB>file"
           cat private-key-content.txt
         else
           echo "No private key material found in git history."
@@ -227,13 +258,13 @@ runs:
           echo "✅ No private key files"
         fi
 
-        # ----- Private key material in history (PEM blocks) -----
+        # ----- Private key material in history (PEM blocks); one row per commit:file -----
         echo "===== PRIVATE KEY MATERIAL (HISTORY) ====="
         if [ -s private-key-content.txt ]; then
-          PKM_COUNT=$(grep -c '^COMMIT ' private-key-content.txt 2>/dev/null || true)
+          PKM_COUNT=$(grep -c . private-key-content.txt 2>/dev/null || true)
           PKM_COUNT=${PKM_COUNT:-0}
           if [ "$PKM_COUNT" -gt 0 ]; then
-            echo "❌ Private key material found in $PKM_COUNT commit(s)"
+            echo "❌ Private key material found in $PKM_COUNT commit/file location(s)"
             cat private-key-content.txt
             FINDINGS=$((FINDINGS + PKM_COUNT))
           else
